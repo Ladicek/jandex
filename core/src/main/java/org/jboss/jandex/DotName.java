@@ -485,9 +485,8 @@ public final class DotName implements Comparable<DotName> {
         while (aCur != null && bCur != null) {
             char aChar = aCharPos >= 0 ? aCurLocal.charAt(aCharPos) : (aCur.innerClass ? '$' : '.');
             char bChar = bCharPos >= 0 ? bCurLocal.charAt(bCharPos) : (bCur.innerClass ? '$' : '.');
-            int diff = aChar - bChar;
-            if (diff != 0) {
-                return diff;
+            if (aChar != bChar) {
+                return aChar - bChar;
             }
 
             aCharPos++;
