@@ -147,10 +147,8 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
 
     abstract boolean eq(E o1, E o2);
 
-    // The normal bit spreader...
     int hash(E o) {
-        int h = hashOf(o);
-        return ((h << 1) - (h << 8));
+        return hashOf(o);
     }
 
     abstract int hashOf(E o);
