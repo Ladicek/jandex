@@ -20,11 +20,11 @@ package org.jboss.jandex;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.lang.reflect.Array;
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 
 /**
  * A strong intern pool. The pool acts as a set where the first stored entry can be retrieved.
@@ -39,7 +39,7 @@ import java.util.NoSuchElementException;
  *
  * @author Jason T. Greene
  */
-abstract class StrongInternPool<E> implements Cloneable, Serializable {
+final class StrongInternPool<E> implements Cloneable, Serializable {
     /**
      * Marks null keys.
      */
@@ -66,14 +66,9 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
     private static final float DEFAULT_LOAD_FACTOR = 0.67f;
 
     /**
-     * The class of values that may be present in {@code table}.
-     */
-    private final Class<E> elementType;
-
-    /**
      * The open-addressed table
      */
-    private transient E[] table;
+    private transient Object[] table;
 
     /**
      * The current number of key-value pairs
@@ -100,10 +95,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
      */
     private transient Index index;
 
-    StrongInternPool(Class<E> elementType, int initialCapacity, float loadFactor) {
-        if (elementType == null) {
-            throw new IllegalArgumentException("Element type must be set");
-        }
+    public StrongInternPool(int initialCapacity, float loadFactor) {
         if (initialCapacity < 0)
             throw new IllegalArgumentException("Can not have a negative size table!");
 
@@ -113,7 +105,6 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         if (!(loadFactor > 0F && loadFactor <= 1F))
             throw new IllegalArgumentException("Load factor must be greater than 0 and less than or equal to 1");
 
-        this.elementType = elementType;
         this.loadFactor = loadFactor;
         init(initialCapacity, loadFactor);
     }
@@ -130,28 +121,90 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
             threshold = (int) (c * loadFactor);
         }
 
-        this.table = (E[]) Array.newInstance(elementType, c);
+        this.table = new Object[c];
     }
 
-    StrongInternPool(Class<E> elementType, int initialCapacity) {
-        this(elementType, initialCapacity, DEFAULT_LOAD_FACTOR);
+    private static boolean eq(Object o1, Object o2) {
+        if (o1 == o2) {
+            return true;
+        }
+        if (o1 != null) {
+            Class<?> o1Class = o1.getClass();
+            if (o1Class == String.class) {
+                return o1.equals(o2);
+            }
+            if (o1Class == MethodInternal.class) {
+                return ((MethodInternal) o1).internEquals(o2);
+            }
+            if (o1Class == FieldInternal.class) {
+                return ((FieldInternal) o1).internEquals(o2);
+            }
+            if (o1Class == RecordComponentInternal.class) {
+                return ((RecordComponentInternal) o1).internEquals(o2);
+            }
+            if (o1Class == byte[].class && o2 != null && o2.getClass() == byte[].class) {
+                return Arrays.equals((byte[]) o1, (byte[]) o2);
+            }
+            if (o1Class == Type[].class && o2 != null && o2.getClass() == Type[].class) {
+                return Interned.arrayEquals((Type[]) o1, (Type[]) o2);
+            }
+            // try peel off Type checks to save expensive instanceof checks
+            if (o1 instanceof Type) {
+                return ((Type) o1).internEquals(o2);
+            }
+            if (o1 instanceof Interned && o2 instanceof Interned) {
+                return ((Interned) o1).internEquals(o2);
+            }
+            if (o1 instanceof Interned[] && o2 instanceof Interned[]) {
+                return Interned.arrayEquals((Type[]) o1, (Type[]) o2);
+            }
+            if (o1 instanceof Object[] && o2 instanceof Object[]) {
+                return Arrays.equals((Object[]) o1, (Object[]) o2);
+            }
+            return o1.equals(o2);
+        }
+
+        // o1 == null && o2 != null
+        return false;
     }
 
-    StrongInternPool(Class<E> elementType) {
-        this(elementType, DEFAULT_CAPACITY);
+    public StrongInternPool(int initialCapacity) {
+        this(initialCapacity, DEFAULT_LOAD_FACTOR);
     }
 
-    boolean mayContain(Object o) {
-        return o == null || o.getClass() == elementType;
+    public StrongInternPool() {
+        this(DEFAULT_CAPACITY);
     }
 
-    abstract boolean eq(E o1, E o2);
-
-    int hash(E o) {
-        return hashOf(o);
+    // The normal bit spreader...
+    private static int hash(Object o) {
+        Class<?> clazz = o.getClass();
+        int h;
+        if (clazz == String.class) {
+            h = o.hashCode();
+        } else if (clazz == MethodInternal.class) {
+            h = ((MethodInternal) o).internHashCode();
+        } else if (clazz == FieldInternal.class) {
+            h = ((FieldInternal) o).internHashCode();
+        } else if (clazz == RecordComponentInternal.class) {
+            h = ((RecordComponentInternal) o).internHashCode();
+        } else if (clazz == byte[].class) {
+            h = Arrays.hashCode((byte[]) o);
+        } else if (clazz == Type[].class) {
+            h = Interned.arrayHashCode((Type[]) o);
+        } else if (o instanceof Type) {
+            h = ((Type) o).internHashCode();
+        } else if (o instanceof Interned) {
+            h = ((Interned) o).internHashCode();
+        } else if (o instanceof Interned[]) {
+            h = Interned.arrayHashCode((Interned[]) o);
+        } else if (o instanceof Object[]) {
+            h = Arrays.hashCode((Object[]) o);
+        } else {
+            h = o.hashCode();
+        }
+        return ((h << 1) - (h << 8));
     }
-
-    abstract int hashOf(E o);
 
     @SuppressWarnings("unchecked")
     private static <K> K maskNull(K key) {
@@ -179,12 +232,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         return size == 0;
     }
 
-    public boolean contains(Object obj) {
-        if (!mayContain(obj)) {
-            return false;
-        }
-        E entry = (E) obj;
-
+    public boolean contains(Object entry) {
         entry = maskNull(entry);
 
         int hash = hash(entry);
@@ -192,7 +240,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         int index = index(hash, length);
 
         for (int start = index;;) {
-            E e = table[index];
+            Object e = table[index];
             if (e == null)
                 return false;
 
@@ -205,7 +253,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         }
     }
 
-    private int offset(E entry) {
+    private int offset(Object entry) {
         entry = maskNull(entry);
 
         int hash = hash(entry);
@@ -213,7 +261,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         int index = index(hash, length);
 
         for (int start = index;;) {
-            E e = table[index];
+            Object e = table[index];
             if (e == null)
                 return -1;
 
@@ -234,21 +282,22 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
      * @param entry the object to internalize
      * @return the one true unique object (equal to {@code entry})
      */
+    @SuppressWarnings("unchecked")
     public E intern(E entry) {
         entry = maskNull(entry);
 
-        E[] table = this.table;
+        Object[] table = this.table;
         int hash = hash(entry);
         int length = table.length;
         int index = index(hash, length);
 
         for (int start = index;;) {
-            E e = table[index];
+            Object e = table[index];
             if (e == null)
                 break;
 
             if (eq(entry, e))
-                return unmaskNull(e);
+                return (E) unmaskNull(e);
 
             index = nextIndex(index, length);
             if (index == start)
@@ -270,10 +319,10 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         if (newLength > MAXIMUM_CAPACITY || newLength <= from)
             return;
 
-        E[] newTable = (E[]) Array.newInstance(elementType, newLength);
-        E[] old = table;
+        Object[] newTable = new Object[newLength];
+        Object[] old = table;
 
-        for (E e : old) {
+        for (Object e : old) {
             if (e == null)
                 continue;
 
@@ -288,21 +337,16 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         table = newTable;
     }
 
-    public boolean remove(Object obj) {
-        if (!mayContain(obj)) {
-            return false;
-        }
-        E o = (E) obj;
-
+    public boolean remove(Object o) {
         o = maskNull(o);
 
-        E[] table = this.table;
+        Object[] table = this.table;
         int length = table.length;
         int hash = hash(o);
         int start = index(hash, length);
 
         for (int index = start;;) {
-            E e = table[index];
+            Object e = table[index];
             if (e == null)
                 return false;
 
@@ -321,12 +365,12 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
     }
 
     private void relocate(int start) {
-        E[] table = this.table;
+        Object[] table = this.table;
         int length = table.length;
         int current = nextIndex(start, length);
 
         for (;;) {
-            E e = table[current];
+            Object e = table[current];
             if (e == null)
                 return;
 
@@ -346,7 +390,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
 
     public void clear() {
         modCount++;
-        E[] table = this.table;
+        Object[] table = this.table;
         for (int i = 0; i < table.length; i++)
             table[i] = null;
 
@@ -384,7 +428,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         int totalSkew = 0;
         int maxSkew = 0;
         for (int i = 0; i < table.length; i++) {
-            E e = table[i];
+            Object e = table[i];
             if (e != null) {
 
                 total++;
@@ -503,7 +547,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
         private int expectedCount = modCount;
         private int current = -1;
         private boolean hasNext;
-        E[] table = StrongInternPool.this.table;
+        Object[] table = StrongInternPool.this.table;
 
         public boolean hasNext() {
             if (hasNext)
@@ -521,6 +565,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
             return false;
         }
 
+        @SuppressWarnings("unchecked")
         public E next() {
             if (modCount != expectedCount)
                 throw new ConcurrentModificationException();
@@ -531,7 +576,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
             current = next++;
             hasNext = false;
 
-            return unmaskNull(table[current]);
+            return (E) unmaskNull(table[current]);
         }
 
         public void remove() {
@@ -550,7 +595,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
             // Start were we relocate
             next = delete;
 
-            E[] table = this.table;
+            Object[] table = this.table;
             if (table != StrongInternPool.this.table) {
                 StrongInternPool.this.remove(table[delete]);
                 table[delete] = null;
@@ -566,7 +611,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
 
             for (;;) {
                 i = nextIndex(i, length);
-                E e = table[i];
+                Object e = table[i];
                 if (e == null)
                     break;
 
@@ -577,7 +622,7 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
                     // iterator
                     if (i < current && current <= delete && table == StrongInternPool.this.table) {
                         int remaining = length - current;
-                        E[] newTable = (E[]) Array.newInstance(elementType, remaining);
+                        Object[] newTable = new Object[remaining];
                         System.arraycopy(table, current, newTable, 0, remaining);
 
                         // Replace iterator's table.
@@ -592,149 +637,6 @@ abstract class StrongInternPool<E> implements Cloneable, Serializable {
                     delete = i;
                 }
             }
-        }
-    }
-
-    // ---
-    // type-specific subclasses
-
-    static StrongInternPool<byte[]> forByteArrays() {
-        return new ByteArrayInternPool();
-    }
-
-    static StrongInternPool<String> forStrings() {
-        return new StringInternPool();
-    }
-
-    static StrongInternPool<Type> forTypes() {
-        return new TypeInternPool();
-    }
-
-    static StrongInternPool<Type[]> forTypeArrays() {
-        return new TypeArrayInternPool();
-    }
-
-    static StrongInternPool<MethodInternal> forMethods() {
-        return new MethodInternPool();
-    }
-
-    static StrongInternPool<FieldInternal> forFields() {
-        return new FieldInternPool();
-    }
-
-    static StrongInternPool<RecordComponentInternal> forRecordComponents() {
-        return new RecordComponentInternPool();
-    }
-
-    private static final class ByteArrayInternPool extends StrongInternPool<byte[]> {
-        ByteArrayInternPool() {
-            super(byte[].class);
-        }
-
-        @Override
-        boolean eq(byte[] o1, byte[] o2) {
-            return Arrays.equals(o1, o2);
-        }
-
-        @Override
-        int hashOf(byte[] o) {
-            return Arrays.hashCode(o);
-        }
-    }
-
-    private static final class StringInternPool extends StrongInternPool<String> {
-        public StringInternPool() {
-            super(String.class);
-        }
-
-        @Override
-        boolean eq(String o1, String o2) {
-            return o1 != null && o1.equals(o2);
-        }
-
-        @Override
-        int hashOf(String o) {
-            return o.hashCode();
-        }
-    }
-
-    private static final class TypeInternPool extends StrongInternPool<Type> {
-        public TypeInternPool() {
-            super(Type.class);
-        }
-
-        @Override
-        boolean eq(Type o1, Type o2) {
-            return o1 != null && o1.internEquals(o2);
-        }
-
-        @Override
-        int hashOf(Type o) {
-            return o.internHashCode();
-        }
-    }
-
-    private static final class TypeArrayInternPool extends StrongInternPool<Type[]> {
-        public TypeArrayInternPool() {
-            super(Type[].class);
-        }
-
-        @Override
-        boolean eq(Type[] o1, Type[] o2) {
-            return Interned.arrayEquals(o1, o2);
-        }
-
-        @Override
-        int hashOf(Type[] o) {
-            return Interned.arrayHashCode(o);
-        }
-    }
-
-    private static final class MethodInternPool extends StrongInternPool<MethodInternal> {
-        public MethodInternPool() {
-            super(MethodInternal.class);
-        }
-
-        @Override
-        boolean eq(MethodInternal o1, MethodInternal o2) {
-            return o1 != null && o1.internEquals(o2);
-        }
-
-        @Override
-        int hashOf(MethodInternal o) {
-            return o.internHashCode();
-        }
-    }
-
-    private static final class FieldInternPool extends StrongInternPool<FieldInternal> {
-        public FieldInternPool() {
-            super(FieldInternal.class);
-        }
-
-        @Override
-        boolean eq(FieldInternal o1, FieldInternal o2) {
-            return o1 != null && o1.internEquals(o2);
-        }
-
-        @Override
-        int hashOf(FieldInternal o) {
-            return o.internHashCode();
-        }
-    }
-
-    private static final class RecordComponentInternPool extends StrongInternPool<RecordComponentInternal> {
-        public RecordComponentInternPool() {
-            super(RecordComponentInternal.class);
-        }
-
-        @Override
-        boolean eq(RecordComponentInternal o1, RecordComponentInternal o2) {
-            return o1 != null && o1.internEquals(o2);
-        }
-
-        @Override
-        int hashOf(RecordComponentInternal o) {
-            return o.internHashCode();
         }
     }
 }

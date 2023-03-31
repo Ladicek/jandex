@@ -298,7 +298,7 @@ final class IndexWriterV1 extends IndexWriterImpl {
     }
 
     private void buildTables(Index index) {
-        pool = StrongInternPool.forStrings();
+        pool = new StrongInternPool<String>();
         classTable = new TreeMap<DotName, Integer>();
 
         // Build the pool for all strings
