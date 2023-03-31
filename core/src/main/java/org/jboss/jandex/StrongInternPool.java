@@ -176,34 +176,31 @@ final class StrongInternPool<E> implements Cloneable, Serializable {
         this(DEFAULT_CAPACITY);
     }
 
-    // The normal bit spreader...
     private static int hash(Object o) {
         Class<?> clazz = o.getClass();
-        int h;
         if (clazz == String.class) {
-            h = o.hashCode();
+            return o.hashCode();
         } else if (clazz == MethodInternal.class) {
-            h = ((MethodInternal) o).internHashCode();
+            return ((MethodInternal) o).internHashCode();
         } else if (clazz == FieldInternal.class) {
-            h = ((FieldInternal) o).internHashCode();
+            return ((FieldInternal) o).internHashCode();
         } else if (clazz == RecordComponentInternal.class) {
-            h = ((RecordComponentInternal) o).internHashCode();
+            return ((RecordComponentInternal) o).internHashCode();
         } else if (clazz == byte[].class) {
-            h = Arrays.hashCode((byte[]) o);
+            return Arrays.hashCode((byte[]) o);
         } else if (clazz == Type[].class) {
-            h = Interned.arrayHashCode((Type[]) o);
+            return Interned.arrayHashCode((Type[]) o);
         } else if (o instanceof Type) {
-            h = ((Type) o).internHashCode();
+            return ((Type) o).internHashCode();
         } else if (o instanceof Interned) {
-            h = ((Interned) o).internHashCode();
+            return ((Interned) o).internHashCode();
         } else if (o instanceof Interned[]) {
-            h = Interned.arrayHashCode((Interned[]) o);
+            return Interned.arrayHashCode((Interned[]) o);
         } else if (o instanceof Object[]) {
-            h = Arrays.hashCode((Object[]) o);
+            return Arrays.hashCode((Object[]) o);
         } else {
-            h = o.hashCode();
+            return o.hashCode();
         }
-        return ((h << 1) - (h << 8));
     }
 
     @SuppressWarnings("unchecked")
