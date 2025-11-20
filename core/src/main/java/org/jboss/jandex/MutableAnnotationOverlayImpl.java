@@ -4,8 +4,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 final class MutableAnnotationOverlayImpl extends AnnotationOverlayImpl implements MutableAnnotationOverlay {
     private volatile boolean frozen;
@@ -17,15 +17,14 @@ final class MutableAnnotationOverlayImpl extends AnnotationOverlayImpl implement
 
     @Override
     Collection<AnnotationInstance> getAnnotationsFor(Declaration declaration) {
-        EquivalenceKey key = EquivalenceKey.of(declaration);
-        // optimistic `get` to avoid `computeIfAbsent` for most calls
-        Collection<AnnotationInstance> result = overlay.get(key);
+        // optimistic `get` to avoid `getOrPut` for most calls
+        Collection<AnnotationInstance> result = overlay.get(declaration);
         if (result != null) {
             return result;
         }
-        return overlay.computeIfAbsent(key, new Function<EquivalenceKey, Collection<AnnotationInstance>>() {
+        return overlay.getOrPut(declaration, new Supplier<Collection<AnnotationInstance>>() {
             @Override
-            public Collection<AnnotationInstance> apply(EquivalenceKey ignored) {
+            public Collection<AnnotationInstance> get() {
                 return new HashSet<>(getOriginalAnnotations(declaration));
             }
         });
@@ -46,28 +45,24 @@ final class MutableAnnotationOverlayImpl extends AnnotationOverlayImpl implement
     }
 
     private AnnotationTransformation addTransformation(Declaration declaration, AnnotationInstance annotation) {
-        AnnotationTarget.Kind declarationKind;
-        EquivalenceKey key;
-
+        Declaration finalDeclaration;
         if (compatibleMode && declaration.kind() == AnnotationTarget.Kind.METHOD_PARAMETER) {
             // the `annotation` has correct `target`, see `addAnnotation()` above,
             // so we don't need to do anything else
-            declarationKind = AnnotationTarget.Kind.METHOD;
-            key = EquivalenceKey.of(declaration.asMethodParameter().method());
+            finalDeclaration = declaration.asMethodParameter().method();
         } else {
-            declarationKind = declaration.kind();
-            key = EquivalenceKey.of(declaration);
+            finalDeclaration = declaration;
         }
 
         return new AnnotationTransformation() {
             @Override
             public boolean supports(AnnotationTarget.Kind kind) {
-                return kind == declarationKind;
+                return kind == finalDeclaration.kind();
             }
 
             @Override
             public void apply(TransformationContext context) {
-                if (key.equals(EquivalenceKey.of(context.declaration()))) {
+                if (KEY_OPS.equals(finalDeclaration, context.declaration())) {
                     context.add(annotation);
                 }
             }
@@ -90,14 +85,12 @@ final class MutableAnnotationOverlayImpl extends AnnotationOverlayImpl implement
     }
 
     private AnnotationTransformation removeTransformation(Declaration declaration, Predicate<AnnotationInstance> predicate) {
-        AnnotationTarget.Kind declarationKind;
-        EquivalenceKey key;
+        Declaration finalDeclaration;
         Predicate<AnnotationInstance> finalPredicate;
 
         if (compatibleMode && declaration.kind() == AnnotationTarget.Kind.METHOD_PARAMETER) {
-            declarationKind = AnnotationTarget.Kind.METHOD;
-            key = EquivalenceKey.of(declaration.asMethodParameter().method());
             int position = declaration.asMethodParameter().position();
+            finalDeclaration = declaration.asMethodParameter().method();
             finalPredicate = new Predicate<AnnotationInstance>() {
                 @Override
                 public boolean test(AnnotationInstance annotation) {
@@ -108,20 +101,19 @@ final class MutableAnnotationOverlayImpl extends AnnotationOverlayImpl implement
                 }
             };
         } else {
-            declarationKind = declaration.kind();
-            key = EquivalenceKey.of(declaration);
+            finalDeclaration = declaration;
             finalPredicate = predicate;
         }
 
         return new AnnotationTransformation() {
             @Override
             public boolean supports(AnnotationTarget.Kind kind) {
-                return kind == declarationKind;
+                return kind == finalDeclaration.kind();
             }
 
             @Override
             public void apply(TransformationContext context) {
-                if (key.equals(EquivalenceKey.of(context.declaration()))) {
+                if (KEY_OPS.equals(finalDeclaration, context.declaration())) {
                     context.remove(finalPredicate);
                 }
             }
