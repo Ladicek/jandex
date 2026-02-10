@@ -1,6 +1,7 @@
 package org.jboss.jandex;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -33,7 +34,7 @@ final class CuckooHashTable<K, V> {
         }
     }
 
-    private static final int DEFAULT_CAPACITY = 16;
+    private static final int DEFAULT_CAPACITY = 32;
     private static final int PROBE_SIZE = 8;
     private static final int THRESHOLD = PROBE_SIZE / 2;
     private static final int LIMIT = 8;
@@ -42,8 +43,10 @@ final class CuckooHashTable<K, V> {
     private static final int GOLDEN_RATIO_MULTIPLIER = 0x9E_37_79_B9;
 
     private volatile int capacity;
-    private volatile ArrayList<Entry<K, V>>[][] tables;
-    private final ReentrantLock[][] locks;
+    private volatile ArrayList<Entry<K, V>>[] table0;
+    private volatile ArrayList<Entry<K, V>>[] table1;
+    private final ReentrantLock[] locks0;
+    private final ReentrantLock[] locks1;
     private final KeyOps<K> keyOps;
 
     public CuckooHashTable(KeyOps<K> keyOps) {
@@ -52,17 +55,17 @@ final class CuckooHashTable<K, V> {
 
     private CuckooHashTable(int capacity, KeyOps<K> keyOps) {
         this.capacity = capacity < DEFAULT_CAPACITY ? DEFAULT_CAPACITY : Integer.highestOneBit(capacity - 1) << 1;
-        this.tables = new ArrayList[2][capacity];
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < this.capacity; j++) {
-                this.tables[i][j] = new ArrayList<>(PROBE_SIZE);
-            }
+        this.table0 = new ArrayList[capacity];
+        this.table1 = new ArrayList[capacity];
+        for (int i = 0; i < this.capacity; i++) {
+            this.table0[i] = new ArrayList<>(PROBE_SIZE);
+            this.table1[i] = new ArrayList<>(PROBE_SIZE);
         }
-        this.locks = new ReentrantLock[2][capacity];
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < capacity; j++) {
-                this.locks[i][j] = new ReentrantLock();
-            }
+        this.locks0 = new ReentrantLock[capacity];
+        this.locks1 = new ReentrantLock[capacity];
+        for (int i = 0; i < capacity; i++) {
+            this.locks0[i] = new ReentrantLock();
+            this.locks1[i] = new ReentrantLock();
         }
         this.keyOps = Objects.requireNonNull(keyOps);
     }
@@ -86,12 +89,12 @@ final class CuckooHashTable<K, V> {
 
     private Entry<K, V> find(K key) {
         int h0 = hash0(key) % capacity;
-        Entry<K, V> e0 = findInList(tables[0][h0], key);
+        Entry<K, V> e0 = findInList(table0[h0], key);
         if (e0 != null) {
             return e0;
         }
         int h1 = hash1(key) % capacity;
-        Entry<K, V> e1 = findInList(tables[1][h1], key);
+        Entry<K, V> e1 = findInList(table1[h1], key);
         if (e1 != null) {
             return e1;
         }
@@ -139,8 +142,8 @@ final class CuckooHashTable<K, V> {
             if (find(key) != null) {
                 return false;
             }
-            ArrayList<Entry<K, V>> list0 = tables[0][h0];
-            ArrayList<Entry<K, V>> list1 = tables[1][h1];
+            ArrayList<Entry<K, V>> list0 = table0[h0];
+            ArrayList<Entry<K, V>> list1 = table1[h1];
             if (list0.size() < THRESHOLD) {
                 list0.add(entry);
                 return true;
@@ -174,13 +177,13 @@ final class CuckooHashTable<K, V> {
     public boolean remove(K key) {
         acquire(key);
         try {
-            ArrayList<Entry<K, V>> list0 = tables[0][hash0(key) % capacity];
+            ArrayList<Entry<K, V>> list0 = table0[hash0(key) % capacity];
             Entry<K, V> e0 = findInList(list0, key);
             if (e0 != null) {
                 list0.remove(e0);
                 return true;
             }
-            ArrayList<Entry<K, V>> list1 = tables[1][hash1(key) % capacity];
+            ArrayList<Entry<K, V>> list1 = table1[hash1(key) % capacity];
             Entry<K, V> e1 = findInList(list1, key);
             if (e1 != null) {
                 list1.remove(e1);
@@ -193,33 +196,34 @@ final class CuckooHashTable<K, V> {
     }
 
     private void acquire(K key) {
-        locks[0][hash0(key) % locks[0].length].lock();
-        locks[1][hash1(key) % locks[1].length].lock();
+        locks0[hash0(key) % locks0.length].lock();
+        locks1[hash1(key) % locks1.length].lock();
     }
 
     private void release(K key) {
-        locks[0][hash0(key) % locks[0].length].unlock();
-        locks[1][hash1(key) % locks[1].length].unlock();
+        locks0[hash0(key) % locks0.length].unlock();
+        locks1[hash1(key) % locks1.length].unlock();
     }
 
     private void resize() {
         int oldCapacity = capacity;
-        for (ReentrantLock lock : locks[0]) {
+        for (ReentrantLock lock : locks0) {
             lock.lock();
         }
         try {
             if (capacity != oldCapacity) {
                 return;
             }
-            ArrayList<Entry<K, V>>[][] oldTables = tables;
+            ArrayList<Entry<K, V>>[] oldTable0 = table0;
+            ArrayList<Entry<K, V>>[] oldTable1 = table1;
             capacity <<= 1;
-            tables = new ArrayList[2][capacity];
-            for (ArrayList<Entry<K, V>>[] table : tables) {
-                for (int i = 0; i < table.length; i++) {
-                    table[i] = new ArrayList<>(PROBE_SIZE);
-                }
+            table0 = new ArrayList[capacity];
+            table1 = new ArrayList[capacity];
+            for (int i = 0; i < capacity; i++) {
+                table0[i] = new ArrayList<>(PROBE_SIZE);
+                table1[i] = new ArrayList<>(PROBE_SIZE);
             }
-            for (ArrayList<Entry<K, V>>[] table : oldTables) {
+            for (ArrayList<Entry<K, V>>[] table : Arrays.asList(oldTable0, oldTable1)) {
                 for (ArrayList<Entry<K, V>> list : table) {
                     for (Entry<K, V> entry : list) {
                         put(entry);
@@ -227,7 +231,7 @@ final class CuckooHashTable<K, V> {
                 }
             }
         } finally {
-            for (ReentrantLock lock : locks[0]) {
+            for (ReentrantLock lock : locks0) {
                 lock.unlock();
             }
         }
@@ -237,7 +241,8 @@ final class CuckooHashTable<K, V> {
         int j = 1 - i;
         int hj = 0;
         for (int round = 0; round < LIMIT; round++) {
-            ArrayList<Entry<K, V>> iList = tables[i][hi];
+            ArrayList<Entry<K, V>>[] iTable = i == 0 ? table0 : table1;
+            ArrayList<Entry<K, V>> iList = iTable[hi];
             Entry<K, V> entry = iList.get(0);
             K key = entry.key;
             switch (i) {
@@ -250,7 +255,8 @@ final class CuckooHashTable<K, V> {
             }
 
             acquire(key);
-            ArrayList<Entry<K, V>> jList = tables[j][hj];
+            ArrayList<Entry<K, V>>[] jTable = j == 0 ? table0 : table1;
+            ArrayList<Entry<K, V>> jList = jTable[hj];
             try {
                 if (iList.remove(entry)) {
                     if (jList.size() < THRESHOLD) {
