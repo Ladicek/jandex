@@ -16,7 +16,7 @@ import java.util.function.Supplier;
 import org.jboss.jandex.AnnotationTransformation.TransformationContext;
 
 class AnnotationOverlayImpl implements AnnotationOverlay {
-    static final CuckooHashTable.KeyOps<Declaration> KEY_OPS = new CuckooHashTable.KeyOps<Declaration>() {
+    static final RobinHoodHashTable.KeyOps<Declaration> KEY_OPS = new RobinHoodHashTable.KeyOps<Declaration>() {
         @Override
         public boolean equals(Declaration key1, Declaration key2) {
             AnnotationTarget.Kind kind = key1.kind();
@@ -169,7 +169,7 @@ class AnnotationOverlayImpl implements AnnotationOverlay {
     final boolean runtimeAnnotationsOnly;
     final boolean inheritedAnnotations;
     final List<AnnotationTransformation> transformations;
-    final CuckooHashTable<Declaration, Collection<AnnotationInstance>> overlay = new CuckooHashTable<>(KEY_OPS);
+    final RobinHoodHashTable<Declaration, Collection<AnnotationInstance>> overlay = new RobinHoodHashTable<>(KEY_OPS);
 
     AnnotationOverlayImpl(IndexView index, boolean compatibleMode, boolean runtimeAnnotationsOnly, boolean inheritedAnnotations,
             Collection<AnnotationTransformation> annotationTransformations) {
